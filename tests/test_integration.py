@@ -1,1 +1,66 @@
-from __future__ import annotations import pytest from enaya.agent.core import Agent, AgentStatus from enaya.llm.providers import BaseLLMProvider from enaya.memory.store import MemoryStore class MockLLMProvider(BaseLLMProvider): def __init__(self): super().__init__(model=gpt-4o-mock) self.responses: list[str] = [] async def complete(self, messages, **kwargs): if self.responses: return self.responses.pop(0) return Mock response @pytest.mark.asyncio async def test_agent_chat(): llm = MockLLMProvider() llm.responses = ['4 is the answer to 2+2'] agent = Agent(llm=llm) response = await agent.chat('What is 2+2?') assert isinstance(response, str) assert len(response) > 0 @pytest.mark.asyncio async def test_agent_state_transitions(): llm = MockLLMProvider() llm.responses = ['I will list files', '{tool_name: done}', 'yes'] agent = Agent(llm=llm) state = await agent.run('List files in current directory') assert state.status in [AgentStatus.COMPLETED, AgentStatus.ERROR] @pytest.mark.asyncio async def test_memory_persistence(): store = MemoryStore(type('C', (), {'backend': 'sqlite', 'path': '/tmp/test_mem', 'collection': 't', 'embedding_model': 'text-embedding-3-small', 'max_history': 5})()) await store.add_interaction('user', 'Test message') history = await store.get_history() assert any(h['content'] == 'Test message' for h in history) @pytest.mark.asyncio async def test_llm_providers_mock_fallback(): from enaya.llm.providers import OpenAIProvider provider = OpenAIProvider(api_key=None, model='gpt-4o') response = await provider.complete([{'role': 'user', 'content': 'Hello'}]) assert 'Mock' in response or 'mock' in response.lower()
+from __future__ import annotations
+
+import pytest
+
+from enaya.agent.core import Agent, AgentStatus
+from enaya.llm.providers import BaseLLMProvider
+from enaya.memory.store import MemoryStore
+
+
+class MockLLMProvider(BaseLLMProvider):
+    def __init__(self):
+        super().__init__(model="gpt-4o-mock")
+        self.responses = []
+
+    async def complete(self, messages, **kwargs):
+        if self.responses:
+            return self.responses.pop(0)
+        return "Mock response"
+
+
+@pytest.mark.asyncio
+async def test_agent_chat():
+    llm = MockLLMProvider()
+    llm.responses = ["4 is the answer to 2+2"]
+    agent = Agent(llm=llm)
+    response = await agent.chat("What is 2+2?")
+    assert isinstance(response, str)
+    assert len(response) > 0
+
+
+@pytest.mark.asyncio
+async def test_agent_state_transitions():
+    llm = MockLLMProvider()
+    llm.responses = ["I will list files", '{"tool_name": "done"}', "yes"]
+    agent = Agent(llm=llm)
+    state = await agent.run("List files in current directory")
+    assert state.status in [AgentStatus.COMPLETED, AgentStatus.ERROR]
+
+
+@pytest.mark.asyncio
+async def test_memory_persistence():
+    store = MemoryStore(
+        type(
+            "C",
+            (),
+            {
+                "backend": "sqlite",
+                "path": "/tmp/test_mem",
+                "collection": "t",
+                "embedding_model": "text-embedding-3-small",
+                "max_history": 5,
+            },
+        )()
+    )
+    await store.add_interaction("user", "Test message")
+    history = await store.get_history()
+    assert any(h["content"] == "Test message" for h in history)
+
+
+@pytest.mark.asyncio
+async def test_llm_providers_mock_fallback():
+    from enaya.llm.providers import OpenAIProvider
+
+    provider = OpenAIProvider(api_key=None, model="gpt-4o")
+    response = await provider.complete([{"role": "user", "content": "Hello"}])
+    assert "Mock" in response or "mock" in response.lower()

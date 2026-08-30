@@ -1,1 +1,4 @@
-from __future__ import annotations from enaya.gateway.server import Gateway, ConnectionManager from enaya.gateway.mcp_server import MCPServer __all__ = [Gateway, ConnectionManager, MCPServer]
+from __future__ import annotations
+from enaya.gateway.server import Gateway, ConnectionManager
+from enaya.gateway.mcp_server import MCPServer
+__all__ = ["Gateway", "ConnectionManager", "MCPServer"]

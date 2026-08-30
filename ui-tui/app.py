@@ -1,1 +1,136 @@
-from __future__ import annotations import asyncio from typing import Any from textual.app import App, ComposeResult from textual.containers import Horizontal, Vertical, VerticalScroll from textual.reactive import reactive from textual.widgets import ( Button, Header, Footer, Input, Static, TextLog, Tree, DataTable, ) from enaya.agent.core import Agent, AgentState from enaya.gateway.server import ConnectionManager class AgentStatusWidget(Static): status = reactive(IDLE) def render(self) -> str: color = { IDLE: green, PLANNING: yellow, EXECUTING: blue, WAITING: dim, ERROR: red, COMPLETED: green, }.get(self.status, white) return fAgent: [{color}]{self.status}[/{color}] class ThoughtLog(TextLog): def add_thought(self, thought: str, step: int) -> None: self.write(f[bold cyan]Thought {step}:[/bold cyan]n{thought}nn) class ActionLog(TextLog): def add_action(self, tool: str, args: dict[str, Any]) -> None: self.write(f[bold magenta]Action:[/bold magenta] {tool}({args})n) class ObservationLog(TextLog): def add_observation(self, result: Any, success: bool) -> None: color = green if success else red self.write(f[bold {color}]Result:[/bold {color}] {result}n) class EnayaTUI(App): CSS = Screen { layout: vertical; } #header { height: 3; background: $surface-darken-1; } #main { layout: horizontal; height: 1fr; } #sidebar { width: 30; background: $surface-darken-2; } #content { layout: vertical; width: 1fr; } #status-bar { height: 1; background: $surface-darken-1; } .log-panel { height: 1fr; border: solid $primary; padding: 1; } .input-area { height: 3; } BINDINGS = [ (q, quit, Quit), (r, run_task, Run Task), (c, chat_mode, Chat), ] def __init__(self) -> None: super().__init__() self.agent: Agent | None = None self.chat_mode = False async def on_mount(self) -> None: self.title = Enaya Agent Platform self.sub_title = Autonomous Agent TUI self.agent = Agent() self.agent.add_observer(self._on_state_change) def compose(self) -> ComposeResult: yield Header(id=header) with Horizontal(id=main): with Vertical(id=sidebar): yield Static([bold]Enaya[/bold], classes=logo) yield AgentStatusWidget(id=status) yield Tree(Backends, id=backends) yield Tree(Plugins, id=plugins) with Vertical(id=content): with VerticalScroll(): yield ThoughtLog(id=thoughts, classes=log-panel) yield ActionLog(id=actions, classes=log-panel) yield ObservationLog(id=observations, classes=log-panel) yield Input(placeholder=Enter task or message..., id=input, classes=input-area) yield Footer(id=status-bar) async def on_input_submitted(self, event: Input.Submitted) -> None: value = event.value if not value: return self.query_one(#input).value = if self.chat_mode: response = await self.agent.chat(value) self.query_one(#thoughts).write(f[bold blue]Enaya:[/bold blue] {response}n) else: self.query_one(#thoughts).write(f[bold]Task:[/bold] {value}n) asyncio.create_task(self._run_task(value)) async def _run_task(self, task: str) -> None: self.query_one(#status).status = PLANNING try: state = await self.agent.run(task) self.query_one(#status).status = state.status.name except Exception as e: self.query_one(#status).status = ERROR self.query_one(#thoughts).write(f[red]Error: {e}[/red]n) async def _on_state_change(self, state: AgentState) -> None: self.query_one(#status).status = state.status.name if state.thoughts: t = state.thoughts[-1] self.query_one(#thoughts).add_thought(t.content, t.step) if state.actions: a = state.actions[-1] self.query_one(#actions).add_action(a.tool_name, a.arguments) if state.observations: o = state.observations[-1] self.query_one(#observations).add_observation(o.result, o.success) def action_run_task(self) -> None: self.chat_mode = False self.query_one(#input).placeholder = Enter task... def action_chat_mode(self) -> None: self.chat_mode = True self.query_one(#input).placeholder = Chat with Enaya... def main() -> None: app = EnayaTUI() app.run() if __name__ == __main__: main()
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import reactive
+from textual.widgets import Header, Footer, Input, Static, TextLog
+
+from enaya.agent.core import Agent, AgentState
+
+
+class AgentStatusWidget(Static):
+    status = reactive("IDLE")
+
+    def render(self) -> str:
+        color = {
+            "IDLE": "green",
+            "PLANNING": "yellow",
+            "EXECUTING": "blue",
+            "WAITING": "dim",
+            "ERROR": "red",
+            "COMPLETED": "green",
+        }.get(self.status, "white")
+        return f"Agent: [{color}]{self.status}[/{color}]"
+
+
+class ThoughtLog(TextLog):
+    def add_thought(self, thought: str, step: int) -> None:
+        self.write(f"[bold cyan]Thought {step}:[/bold cyan]\n{thought}\n\n")
+
+
+class ActionLog(TextLog):
+    def add_action(self, tool: str, args: dict[str, Any]) -> None:
+        self.write(f"[bold magenta]Action:[/bold magenta] {tool}({args})\n")
+
+
+class ObservationLog(TextLog):
+    def add_observation(self, result: Any, success: bool) -> None:
+        color = "green" if success else "red"
+        self.write(f"[bold {color}]Result:[/bold {color}] {result}\n")
+
+
+class EnayaTUI(App):
+    CSS = """
+    Screen { layout: vertical; }
+    #header { height: 3; background: $surface-darken-1; }
+    #main { layout: horizontal; height: 1fr; }
+    #sidebar { width: 30; background: $surface-darken-2; }
+    #content { layout: vertical; width: 1fr; }
+    #status-bar { height: 1; background: $surface-darken-1; }
+    .log-panel { height: 1fr; border: solid $primary; padding: 1; }
+    .input-area { height: 3; }
+    """
+
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("r", "run_task", "Run Task"),
+        ("c", "chat_mode", "Chat"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.agent: Agent | None = None
+        self.chat_mode = False
+
+    async def on_mount(self) -> None:
+        self.title = "Enaya Agent Platform"
+        self.sub_title = "Autonomous Agent TUI"
+        self.agent = Agent()
+        self.agent.add_observer(self._on_state_change)
+
+    def compose(self) -> ComposeResult:
+        yield Header(id="header")
+        with Horizontal(id="main"):
+            with Vertical(id="sidebar"):
+                yield Static("[bold]Enaya[/bold]", classes="logo")
+                yield AgentStatusWidget(id="status")
+            with Vertical(id="content"):
+                with VerticalScroll():
+                    yield ThoughtLog(id="thoughts", classes="log-panel")
+                    yield ActionLog(id="actions", classes="log-panel")
+                    yield ObservationLog(id="observations", classes="log-panel")
+                yield Input(placeholder="Enter task or message...", id="input", classes="input-area")
+        yield Footer(id="status-bar")
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        value = event.value
+        if not value:
+            return
+        self.query_one("#input").value = ""
+        if self.chat_mode:
+            response = await self.agent.chat(value)
+            self.query_one("#thoughts").write(f"[bold blue]Enaya:[/bold blue] {response}\n")
+        else:
+            self.query_one("#thoughts").write(f"[bold]Task:[/bold] {value}\n")
+            asyncio.create_task(self._run_task(value))
+
+    async def _run_task(self, task: str) -> None:
+        self.query_one("#status").status = "PLANNING"
+        try:
+            state = await self.agent.run(task)
+            self.query_one("#status").status = state.status.name
+        except Exception as e:
+            self.query_one("#status").status = "ERROR"
+            self.query_one("#thoughts").write(f"[red]Error: {e}[/red]\n")
+
+    async def _on_state_change(self, state: AgentState) -> None:
+        self.query_one("#status").status = state.status.name
+        if state.thoughts:
+            t = state.thoughts[-1]
+            self.query_one("#thoughts").add_thought(t.content, t.step)
+        if state.actions:
+            a = state.actions[-1]
+            self.query_one("#actions").add_action(a.tool_name, a.arguments)
+        if state.observations:
+            o = state.observations[-1]
+            self.query_one("#observations").add_observation(o.result, o.success)
+
+    def action_run_task(self) -> None:
+        self.chat_mode = False
+        self.query_one("#input").placeholder = "Enter task..."
+
+    def action_chat_mode(self) -> None:
+        self.chat_mode = True
+        self.query_one("#input").placeholder = "Chat with Enaya..."
+
+
+def main() -> None:
+    app = EnayaTUI()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

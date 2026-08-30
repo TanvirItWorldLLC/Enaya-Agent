@@ -1,1 +1,3 @@
-from __future__ import annotations from enaya.skills.manager import SkillManager, Skill __all__ = [SkillManager, Skill]
+from __future__ import annotations
+from enaya.skills.manager import SkillManager, Skill
+__all__ = ["SkillManager", "Skill"]

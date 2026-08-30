@@ -1,1 +1,183 @@
-from __future__ import annotations import asyncio import json from typing import Any, Callable, Coroutine import structlog from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request from fastapi.middleware.cors import CORSMiddleware from fastapi.responses import StreamingResponse import uvicorn from enaya.config.settings import EnayaConfig, get_config from enaya.agent.core import Agent, AgentState from enaya.gateway.mcp_server import MCPServer from enaya.tools.registry import ToolRegistry from enaya.tools.builtins import register_builtin_tools logger = structlog.get_logger() class ConnectionManager: def __init__(self) -> None: self.active: dict[str, WebSocket] = {} self.agents: dict[str, Agent] = {} async def connect(self, websocket: WebSocket, client_id: str) -> None: await websocket.accept() self.active[client_id] = websocket logger.info(client_connected, client_id=client_id) async def disconnect(self, client_id: str) -> None: self.active.pop(client_id, None) self.agents.pop(client_id, None) logger.info(client_disconnected, client_id=client_id) async def send(self, client_id: str, message: dict[str, Any]) -> None: ws = self.active.get(client_id) if ws: await ws.send_json(message) async def broadcast(self, message: dict[str, Any]) -> None: for ws in self.active.values(): await ws.send_json(message) class Gateway: def __init__(self, config: EnayaConfig | None = None) -> None: self.config = config or get_config() self.app = FastAPI(title=Enaya Gateway, version=0.1.0) self.manager = ConnectionManager() self.mcp_server = MCPServer() self._setup_routes() self._setup_middleware() self._setup_mcp() logger.info(gateway_initialized, host=self.config.gateway.host, port=self.config.gateway.port) def _setup_middleware(self) -> None: self.app.add_middleware( CORSMiddleware, allow_origins=self.config.gateway.cors_origins, allow_credentials=True, allow_methods=[*], allow_headers=[*], ) def _setup_mcp(self) -> None: if not self.config.gateway.enable_mcp: return # Register built-in tools with MCP registry = ToolRegistry() register_builtin_tools(registry) for tool_spec in registry.describe_all(): self.mcp_server.register_tool( name=tool_spec[name], description=tool_spec[description], handler=lambda **kw: {result: fMock execution of {tool_spec[name]}}, schema=tool_spec.get(parameters, {}), ) logger.info(mcp_tools_registered, count=len(registry.describe_all())) def _setup_routes(self) -> None: @self.app.get(/health) async def health() -> dict[str, str]: return {status: ok, service: enaya-gateway, version: 0.1.0} @self.app.post(/agent/run) async def run_agent(request: dict[str, Any]) -> dict[str, Any]: task = request.get(task, ) context = request.get(context, {}) agent = Agent() state = await agent.run(task, context) return { task: state.task, status: state.status.name, iterations: state.iteration, thoughts: [t.content for t in state.thoughts], } @self.app.post(/agent/chat) async def chat_agent(request: dict[str, Any]) -> dict[str, Any]: message = request.get(message, ) agent = Agent() response = await agent.chat(message) return {response: response} @self.app.get(/tools) async def list_tools() -> list[dict[str, Any]]: registry = ToolRegistry() register_builtin_tools(registry) return registry.describe_all() @self.app.get(/mcp/sse) async def mcp_sse(request: Request) -> StreamingResponse: return await self.mcp_server._handle_sse(request) @self.app.post(/mcp/messages) async def mcp_messages(request: Request) -> Any: return await self.mcp_server._handle_message(request) @self.app.websocket(/ws/{client_id}) async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None: await self.manager.connect(websocket, client_id) try: while True: data = await websocket.receive_json() await self._handle_ws_message(client_id, data) except WebSocketDisconnect: await self.manager.disconnect(client_id) async def _handle_ws_message(self, client_id: str, data: dict[str, Any]) -> None: msg_type = data.get(type, unknown) payload = data.get(payload, {}) if msg_type == init: agent = Agent() self.manager.agents[client_id] = agent agent.add_observer(lambda s: self._on_state_change(client_id, s)) await self.manager.send(client_id, {type: initialized, agent_id: agent.id}) elif msg_type == run_task: agent = self.manager.agents.get(client_id) if agent: asyncio.create_task(self._run_agent_task(client_id, agent, payload)) elif msg_type == chat: agent = self.manager.agents.get(client_id) if agent: response = await agent.chat(payload.get(message, )) await self.manager.send(client_id, {type: chat_response, content: response}) elif msg_type == ping: await self.manager.send(client_id, {type: pong}) else: await self.manager.send(client_id, {type: error, message: fUnknown type: {msg_type}}) async def _run_agent_task(self, client_id: str, agent: Agent, payload: dict[str, Any]) -> None: task = payload.get(task, ) context = payload.get(context, {}) await agent.run(task, context) await self.manager.send(client_id, {type: task_complete}) async def _on_state_change(self, client_id: str, state: AgentState) -> None: await self.manager.send( client_id, { type: state_update, status: state.status.name, iteration: state.iteration, current_thought: state.thoughts[-1].content if state.thoughts else None, }, ) async def run(self) -> None: config = uvicorn.Config( self.app, host=self.config.gateway.host, port=self.config.gateway.port, log_level=info, ) server = uvicorn.Server(config) await server.serve()
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import structlog
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from enaya.agent.core import Agent, AgentState
+from enaya.config.settings import EnayaConfig, get_config
+from enaya.gateway.mcp_server import MCPServer
+from enaya.tools.builtins import register_builtin_tools
+from enaya.tools.registry import ToolRegistry
+
+logger = structlog.get_logger()
+
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active: dict[str, WebSocket] = {}
+        self.agents: dict[str, Agent] = {}
+
+    async def connect(self, websocket: WebSocket, client_id: str) -> None:
+        await websocket.accept()
+        self.active[client_id] = websocket
+        logger.info("client_connected", client_id=client_id)
+
+    async def disconnect(self, client_id: str) -> None:
+        self.active.pop(client_id, None)
+        self.agents.pop(client_id, None)
+        logger.info("client_disconnected", client_id=client_id)
+
+    async def send(self, client_id: str, message: dict[str, Any]) -> None:
+        ws = self.active.get(client_id)
+        if ws:
+            await ws.send_json(message)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
+        for ws in self.active.values():
+            await ws.send_json(message)
+
+
+class Gateway:
+    def __init__(self, config: EnayaConfig | None = None) -> None:
+        self.config = config or get_config()
+        self.app = FastAPI(title="Enaya Gateway", version="0.1.0")
+        self.manager = ConnectionManager()
+        self.mcp_server = MCPServer()
+        self._setup_middleware()
+        self._setup_mcp()
+        self._setup_routes()
+        logger.info(
+            "gateway_initialized",
+            host=self.config.gateway.host,
+            port=self.config.gateway.port,
+        )
+
+    def _setup_middleware(self) -> None:
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=self.config.gateway.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    def _setup_mcp(self) -> None:
+        if not self.config.gateway.enable_mcp:
+            return
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        for tool_spec in registry.describe_all():
+            self.mcp_server.register_tool(
+                name=tool_spec["name"],
+                description=tool_spec["description"],
+                handler=lambda **kw: {"result": f"Mock execution of {tool_spec['name']}"},
+                schema=tool_spec.get("parameters", {}),
+            )
+        logger.info("mcp_tools_registered", count=len(registry.describe_all()))
+
+    def _setup_routes(self) -> None:
+        @self.app.get("/health")
+        async def health() -> dict[str, str]:
+            return {"status": "ok", "service": "enaya-gateway", "version": "0.1.0"}
+
+        @self.app.post("/agent/run")
+        async def run_agent(request: dict[str, Any]) -> dict[str, Any]:
+            task = request.get("task", "")
+            context = request.get("context", {})
+            agent = Agent()
+            state = await agent.run(task, context)
+            return {
+                "task": state.task,
+                "status": state.status.name,
+                "iterations": state.iteration,
+                "thoughts": [t.content for t in state.thoughts],
+            }
+
+        @self.app.post("/agent/chat")
+        async def chat_agent(request: dict[str, Any]) -> dict[str, Any]:
+            message = request.get("message", "")
+            agent = Agent()
+            response = await agent.chat(message)
+            return {"response": response}
+
+        @self.app.get("/tools")
+        async def list_tools() -> list[dict[str, Any]]:
+            registry = ToolRegistry()
+            register_builtin_tools(registry)
+            return registry.describe_all()
+
+        @self.app.get("/mcp/sse")
+        async def mcp_sse(request: Request) -> StreamingResponse:
+            return await self.mcp_server._handle_sse(request)
+
+        @self.app.post("/mcp/messages")
+        async def mcp_messages(request: Request) -> Any:
+            return await self.mcp_server._handle_message(request)
+
+        @self.app.websocket("/ws/{client_id}")
+        async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
+            await self.manager.connect(websocket, client_id)
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    await self._handle_ws_message(client_id, data)
+            except WebSocketDisconnect:
+                await self.manager.disconnect(client_id)
+
+    async def _handle_ws_message(self, client_id: str, data: dict[str, Any]) -> None:
+        msg_type = data.get("type", "unknown")
+        payload = data.get("payload", {})
+        if msg_type == "init":
+            agent = Agent()
+            self.manager.agents[client_id] = agent
+            agent.add_observer(lambda s: self._on_state_change(client_id, s))
+            await self.manager.send(client_id, {"type": "initialized", "agent_id": agent.id})
+        elif msg_type == "run_task":
+            agent = self.manager.agents.get(client_id)
+            if agent:
+                asyncio.create_task(self._run_agent_task(client_id, agent, payload))
+        elif msg_type == "chat":
+            agent = self.manager.agents.get(client_id)
+            if agent:
+                response = await agent.chat(payload.get("message", ""))
+                await self.manager.send(client_id, {"type": "chat_response", "content": response})
+        elif msg_type == "ping":
+            await self.manager.send(client_id, {"type": "pong"})
+        else:
+            await self.manager.send(
+                client_id, {"type": "error", "message": f"Unknown type: {msg_type}"}
+            )
+
+    async def _run_agent_task(self, client_id: str, agent: Agent, payload: dict[str, Any]) -> None:
+        task = payload.get("task", "")
+        context = payload.get("context", {})
+        await agent.run(task, context)
+        await self.manager.send(client_id, {"type": "task_complete"})
+
+    async def _on_state_change(self, client_id: str, state: AgentState) -> None:
+        await self.manager.send(
+            client_id,
+            {
+                "type": "state_update",
+                "status": state.status.name,
+                "iteration": state.iteration,
+                "current_thought": state.thoughts[-1].content if state.thoughts else None,
+            },
+        )
+
+    async def run(self) -> None:
+        config = uvicorn.Config(
+            self.app,
+            host=self.config.gateway.host,
+            port=self.config.gateway.port,
+            log_level="info",
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
